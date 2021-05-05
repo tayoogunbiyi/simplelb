@@ -11,9 +11,11 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"hash/fnv"
 )
 
 const (
@@ -21,13 +23,14 @@ const (
 	Retry
 	ConfigFileName = "config.json"
 	RoundRobin = "round_robin"
+	SourceIPHash = "source_ip"
 )
 
 var BalancingAlgorithmMap = make(map[string]bool)
 var serverPool ServerPool
 
 func init(){
-	balancingAlgorithms := []string{RoundRobin}
+	balancingAlgorithms := []string{RoundRobin,SourceIPHash}
 	for _,balancingAlgorithm := range balancingAlgorithms {
 		BalancingAlgorithmMap[balancingAlgorithm] = true
 	}
@@ -100,6 +103,8 @@ func NewServerPool(backends []*Backend,balancingAlgorithm string) ServerPool{
 		bs = &RoundRobinSelector{
 			backends: &backends,
 		}
+	case SourceIPHash:
+		bs = &SourceIPHashSelector{backends: &backends}
 	default:
 		bs = &RoundRobinSelector{
 			backends: &backends,
@@ -122,24 +127,41 @@ type RoundRobinSelector struct {
 	current uint64
 }
 
-func (rrs* RoundRobinSelector) NextIndex() int{
-	return int(atomic.AddUint64(&rrs.current, uint64(1)) % uint64(len(*rrs.backends)))
+type SourceIPHashSelector struct {
+	backends *[]*Backend
 }
 
-func (rrs* RoundRobinSelector) NextBackend(_ *http.Request) *Backend{
+
+func (rs * RoundRobinSelector) NextIndex() int{
+	return int(atomic.AddUint64(&rs.current, uint64(1)) % uint64(len(*rs.backends)))
+}
+
+func (rs * RoundRobinSelector) NextBackend(_ *http.Request) *Backend{
 	// loop entire backends to find out an Alive backend
-	next := rrs.NextIndex()
-	l := len(*rrs.backends) + next // start from next and move a full cycle
+	next := rs.NextIndex()
+	l := len(*rs.backends) + next // start from next and move a full cycle
 	for i := next; i < l; i++ {
-		idx := i % len(*rrs.backends) // take an index by modding
-		if (*rrs.backends)[idx].IsAlive() { // if we have an alive backend, use it and store if it's not the original one
+		idx := i % len(*rs.backends)       // take an index by modding
+		if (*rs.backends)[idx].IsAlive() { // if we have an alive backend, use it and store if it's not the original one
 			if i != next {
-				atomic.StoreUint64(&rrs.current, uint64(idx))
+				atomic.StoreUint64(&rs.current, uint64(idx))
 			}
-			return (*rrs.backends)[idx]
+			return (*rs.backends)[idx]
 		}
 	}
 	return nil
+}
+
+func generateStringHash(s string) uint32{
+	h := fnv.New32a()
+	h.Write([]byte(s))
+	return h.Sum32()
+}
+
+func (ss *SourceIPHashSelector) NextBackend(r *http.Request) *Backend {
+	ip := strings.Split(r.RemoteAddr,":")[0]
+	idx := int(generateStringHash(ip)) % len(*ss.backends)
+	return (*ss.backends)[idx]
 }
 
 // AddBackend to the server pool
