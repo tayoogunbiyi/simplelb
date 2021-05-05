@@ -23,7 +23,7 @@ const (
 	Retry
 	ConfigFileName = "config.json"
 	RoundRobin = "round_robin"
-	SourceIPHash = "source_ip"
+	SourceIPHash = "source_ip_hash"
 )
 
 var BalancingAlgorithmMap = make(map[string]bool)
