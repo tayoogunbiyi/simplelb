@@ -27,7 +27,7 @@ var BalancingAlgorithmMap = make(map[string]bool)
 var serverPool ServerPool
 
 func init(){
-	balancingAlgorithms := []string{RoundRobin,}
+	balancingAlgorithms := []string{RoundRobin}
 	for _,balancingAlgorithm := range balancingAlgorithms {
 		BalancingAlgorithmMap[balancingAlgorithm] = true
 	}
@@ -97,11 +97,11 @@ func NewServerPool(backends []*Backend,balancingAlgorithm string) ServerPool{
 	var bs BackendSelector
 	switch balancingAlgorithm {
 	case RoundRobin:
-		bs = RoundRobinSelector{
+		bs = &RoundRobinSelector{
 			backends: &backends,
 		}
 	default:
-		bs = RoundRobinSelector{
+		bs = &RoundRobinSelector{
 			backends: &backends,
 		}
 	}
@@ -122,11 +122,23 @@ type RoundRobinSelector struct {
 	current uint64
 }
 
-func (r RoundRobinSelector) nextIndex() int{
+func (r* RoundRobinSelector) NextIndex() int{
 	return int(atomic.AddUint64(&r.current, uint64(1)) % uint64(len(*r.backends)))
 }
 
-func (r RoundRobinSelector) NextBackend() *Backend{
+func (r* RoundRobinSelector) NextBackend() *Backend{
+	// loop entire backends to find out an Alive backend
+	next := r.NextIndex()
+	l := len(*r.backends) + next // start from next and move a full cycle
+	for i := next; i < l; i++ {
+		idx := i % len(*r.backends) // take an index by modding
+		if (*r.backends)[idx].IsAlive() { // if we have an alive backend, use it and store if it's not the original one
+			if i != next {
+				atomic.StoreUint64(&r.current, uint64(idx))
+			}
+			return (*r.backends)[idx]
+		}
+	}
 	return nil
 }
 
@@ -184,6 +196,7 @@ func lb(w http.ResponseWriter, r *http.Request) {
 	}
 
 	backend := serverPool.NextBackend()
+	log.Printf("using backend %s",backend.URL)
 	if backend != nil {
 		backend.ReverseProxy.ServeHTTP(w, r)
 		return
@@ -203,7 +216,7 @@ func isBackendAlive(u *url.URL) bool {
 	return true
 }
 
-// healthCheck runs a routine for check status of the backends every 2 mins
+// healthCheck runs a routine for check status of the backends every 2 minutes
 func healthCheck() {
 	t := time.NewTicker(time.Minute * 2)
 	for {
