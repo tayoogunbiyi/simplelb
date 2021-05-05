@@ -114,7 +114,7 @@ func NewServerPool(backends []*Backend,balancingAlgorithm string) ServerPool{
 
 
 type BackendSelector interface {
-	NextBackend() *Backend
+	NextBackend(r *http.Request) *Backend
 }
 
 type RoundRobinSelector struct {
@@ -122,21 +122,21 @@ type RoundRobinSelector struct {
 	current uint64
 }
 
-func (r* RoundRobinSelector) NextIndex() int{
-	return int(atomic.AddUint64(&r.current, uint64(1)) % uint64(len(*r.backends)))
+func (rrs* RoundRobinSelector) NextIndex() int{
+	return int(atomic.AddUint64(&rrs.current, uint64(1)) % uint64(len(*rrs.backends)))
 }
 
-func (r* RoundRobinSelector) NextBackend() *Backend{
+func (rrs* RoundRobinSelector) NextBackend(_ *http.Request) *Backend{
 	// loop entire backends to find out an Alive backend
-	next := r.NextIndex()
-	l := len(*r.backends) + next // start from next and move a full cycle
+	next := rrs.NextIndex()
+	l := len(*rrs.backends) + next // start from next and move a full cycle
 	for i := next; i < l; i++ {
-		idx := i % len(*r.backends) // take an index by modding
-		if (*r.backends)[idx].IsAlive() { // if we have an alive backend, use it and store if it's not the original one
+		idx := i % len(*rrs.backends) // take an index by modding
+		if (*rrs.backends)[idx].IsAlive() { // if we have an alive backend, use it and store if it's not the original one
 			if i != next {
-				atomic.StoreUint64(&r.current, uint64(idx))
+				atomic.StoreUint64(&rrs.current, uint64(idx))
 			}
-			return (*r.backends)[idx]
+			return (*rrs.backends)[idx]
 		}
 	}
 	return nil
@@ -195,7 +195,7 @@ func lb(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	backend := serverPool.NextBackend()
+	backend := serverPool.NextBackend(r)
 	log.Printf("using backend %s",backend.URL)
 	if backend != nil {
 		backend.ReverseProxy.ServeHTTP(w, r)
