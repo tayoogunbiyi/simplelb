@@ -97,6 +97,19 @@ func NewServerPool(backends []*Backend,balancingAlgorithm string) ServerPool{
 		log.Printf("using %s as the balancing algorithm",balancingAlgorithm)
 	}
 
+	var uniqueBackends []*Backend
+
+	seenBackends := make(map[string]bool)
+	for _,backend := range backends{
+		url := backend.URL.String()
+		_, ok := seenBackends[url]
+		if !ok{
+			uniqueBackends = append(uniqueBackends, backend)
+			log.Printf("Configured backend: %s\n", url)
+			seenBackends[url] = true
+		}
+	}
+	backends = uniqueBackends
 	var bs BackendSelector
 	switch balancingAlgorithm {
 	case RoundRobin:
@@ -296,7 +309,6 @@ func main() {
 			Alive:        true,
 			ReverseProxy: proxy,
 		})
-		log.Printf("Configured server: %s\n", parsedBackendURL)
 	}
 
 	serverPool = NewServerPool(backends,config.BalancingAlgorithm)
