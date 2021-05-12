@@ -16,7 +16,13 @@ Create a config.json file of the form below
   "backendURLs": [
         "http://localhost:6060","http://localhost:7070","http://localhost:8080"
         ],
-  "balancingAlgorithm": "round_robin", // supports 2 algorithms currently - round_robin, source_ip_hash
+  "balancingAlgorithm": "weighted_round_robin", // supports 3 algorithms currently - round_robin, weighted_round_robin, source_ip_hash
+  "weights":{
+    "http://localhost:6060":1,
+    "http://localhost:7070":10,
+    "http://localhost:8080":5,
+  },
   "port": 1234 // port which the load balancer runs on
 }
 ```
+The "weights" key is only needed when using weighted_round_robin. If weighted_round_robin is used and the weights are either not specified or not sufficiently specified for each of the backend urls, a default weight of 1 (weight of 1 for each backend, making it regular round robin) is used.  

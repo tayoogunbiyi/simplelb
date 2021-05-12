@@ -24,13 +24,14 @@ const (
 	ConfigFileName = "config.json"
 	RoundRobin = "round_robin"
 	SourceIPHash = "source_ip_hash"
+	WeightedRoundRobin = "weighted_round_robin"
 )
 
 var BalancingAlgorithmMap = make(map[string]bool)
 var serverPool ServerPool
 
 func init(){
-	balancingAlgorithms := []string{RoundRobin,SourceIPHash}
+	balancingAlgorithms := []string{RoundRobin,SourceIPHash,WeightedRoundRobin}
 	for _,balancingAlgorithm := range balancingAlgorithms {
 		BalancingAlgorithmMap[balancingAlgorithm] = true
 	}
@@ -40,6 +41,7 @@ type Config struct {
 	BackendURLs        []string `json:"backendURLs"`
 	BalancingAlgorithm string `json:"balancingAlgorithm"`
 	Port int `json:"port" validate:"required"`
+	Weights map[string]int `json:"weights"`
 }
 
 func ParseConfiguration(filename string) (*Config, error) {
@@ -88,7 +90,8 @@ type ServerPool struct {
 	balancingAlgorithm string
 }
 
-func NewServerPool(backends []*Backend,balancingAlgorithm string) ServerPool{
+func NewServerPool(backends []*Backend,configuration *Config) ServerPool{
+	balancingAlgorithm := configuration.BalancingAlgorithm
 	_, ok := BalancingAlgorithmMap[balancingAlgorithm]
 	if !ok {
 		log.Printf("unknown balancing algorithm '%s'. using default round robin \n",balancingAlgorithm)
@@ -116,6 +119,21 @@ func NewServerPool(backends []*Backend,balancingAlgorithm string) ServerPool{
 		bs = &RoundRobinSelector{
 			backends: &backends,
 		}
+	case WeightedRoundRobin:
+		for _,backend := range backends{
+			if _, ok := configuration.Weights[backend.URL.String()]; !ok {
+				configuration.Weights[backend.URL.String()] = 1
+			}
+		}
+		for url,weight := range configuration.Weights{
+			if weight <= 0{
+				log.Fatalf("invalid weight '%d' for url '%s'. Weight must be greater than 0",weight,url)
+			}
+		}
+		bs = &WeightedRoundRobinSelector{
+			backends: &backends,
+			Weights:            configuration.Weights,
+		}
 	case SourceIPHash:
 		bs = &SourceIPHashSelector{backends: &backends}
 	default:
@@ -130,7 +148,6 @@ func NewServerPool(backends []*Backend,balancingAlgorithm string) ServerPool{
 	}
 }
 
-
 type BackendSelector interface {
 	NextBackend(r *http.Request) *Backend
 }
@@ -140,13 +157,29 @@ type RoundRobinSelector struct {
 	current uint64
 }
 
+type WeightedRoundRobinSelector struct {
+	backends *[]*Backend
+	Weights map[string]int
+	currentBackend uint64
+	currentWeight uint64
+}
+
 type SourceIPHashSelector struct {
 	backends *[]*Backend
 }
 
-
 func (rs * RoundRobinSelector) NextIndex() int{
 	return int(atomic.AddUint64(&rs.current, uint64(1)) % uint64(len(*rs.backends)))
+}
+func (wrs *WeightedRoundRobinSelector) NextBackend(_ *http.Request) *Backend{
+	currentBackend := (*wrs.backends)[wrs.currentBackend]
+	atomic.AddUint64(&wrs.currentWeight,uint64(1))
+
+	if int(wrs.currentWeight) == wrs.Weights[currentBackend.URL.String()]{
+		wrs.currentWeight = 0
+		atomic.StoreUint64(&wrs.currentBackend,atomic.AddUint64(&wrs.currentBackend,uint64(1)) % uint64(len(*wrs.backends)))
+	}
+	return currentBackend
 }
 
 func (rs * RoundRobinSelector) NextBackend(_ *http.Request) *Backend{
@@ -311,7 +344,7 @@ func main() {
 		})
 	}
 
-	serverPool = NewServerPool(backends,config.BalancingAlgorithm)
+	serverPool = NewServerPool(backends,config)
 	// create http server
 	server := http.Server{
 		Addr:    fmt.Sprintf(":%d", config.Port),
